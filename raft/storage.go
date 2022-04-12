@@ -68,6 +68,11 @@ type Storage interface {
 	// so raft state machine could know that Storage needs some time to prepare
 	// snapshot and call Snapshot later.
 	Snapshot() (pb.Snapshot, error)
+
+    // Append the new entries to storage.
+    // TODO (xiangli): ensure the entries are continuous and
+    // entries[0].Index > ms.entries[0].Index
+    Append(entries []pb.Entry) error
 }
 
 // MemoryStorage implements the Storage interface backed by an
