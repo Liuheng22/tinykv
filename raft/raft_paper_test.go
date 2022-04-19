@@ -422,6 +422,7 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	}
 	msgs := r.readMessages()
 	sort.Sort(messageSlice(msgs))
+	DPrintf("len %v", msgs)
 	for i, m := range msgs {
 		if w := uint64(i + 2); m.To != w {
 			t.Errorf("to = %d, want %d", m.To, w)
@@ -468,8 +469,9 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 				r.Step(acceptAndReply(m))
 			}
 		}
-
+		DPrintf("round :%d ,committed: %d, li: %d", i, r.RaftLog.committed, li)
 		if g := r.RaftLog.committed > li; g != tt.wack {
+			DPrintf("error %d", i)
 			t.Errorf("#%d: ack commit = %v, want %v", i, g, tt.wack)
 		}
 	}
@@ -902,6 +904,7 @@ func commitNoopEntry(r *Raft, s *MemoryStorage) {
 	msgs := r.readMessages()
 	for _, m := range msgs {
 		if m.MsgType != pb.MessageType_MsgAppend || len(m.Entries) != 1 || m.Entries[0].Data != nil {
+			DPrintf("MsgType:%v len(m.Entries): %d message:%v", m.MsgType, len(m.Entries), m)
 			panic("not a message to append noop entry")
 		}
 		r.Step(acceptAndReply(m))

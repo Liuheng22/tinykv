@@ -69,14 +69,63 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		lastindex = 0
 	}
+	entries, _ := storage.Entries(firstindex, lastindex+1)
 	return &RaftLog{
 		storage:         storage,
 		committed:       firstindex - 1,
 		applied:         firstindex - 1,
 		stabled:         lastindex,
-		entries:         make([]pb.Entry, 0),
+		entries:         entries,
 		pendingSnapshot: nil, // not used in 2A
 	}
+}
+
+// 返回某个index后的entries
+func (l *RaftLog) entries_since(index uint64) []pb.Entry {
+	firstindex, _ := l.storage.FirstIndex()
+	offset := max(index+1, firstindex)
+	high := l.committed + 1
+	if high > offset {
+		if flag == "copy" || flag == "all" {
+			DPrintf("Node find entries_since from lo: %d to hi: %d", offset, high)
+		}
+		return l.findentries(offset, high)
+	}
+	return []pb.Entry{}
+}
+
+// 某个index之后，是否还有entries
+func (l *RaftLog) has_entries_since(index uint64) bool {
+	firstindex, _ := l.storage.FirstIndex()
+	offset := max(index+1, firstindex)
+	high := l.committed + 1
+	if flag == "copy" || flag == "all" {
+		DPrintf("Node find entries_since from lo: %d to hi: %d", offset, high)
+	}
+	return high > offset
+}
+
+func (l *RaftLog) isUpToDate(index uint64, term uint64) bool {
+	return term > l.LastTerm() || (term == l.LastTerm() && index >= l.LastIndex())
+}
+
+// 获得相应区间的entries
+func (l *RaftLog) findentries(lo uint64, hi uint64) []pb.Entry {
+	var ents []pb.Entry
+	// 如果有一部分在storage里面，先找那一部分
+	if lo <= l.stabled {
+		stable_ents, _ := l.storage.Entries(lo, min(hi, l.stabled+1))
+		ents = append(ents, stable_ents...)
+	}
+	// 有未unstabled的部分
+	if hi > l.stabled+1 {
+		firstindex := l.entries[0].Index
+		ents = append(ents, l.entries[max(l.stabled+1, lo)-firstindex:hi-firstindex]...)
+	}
+	if flag == "copy" || flag == "all" {
+		// DPrintf("log.go line 101 ents:%d", len(ents))
+	}
+	return ents
 }
 
 // We need to compact the log entries in some point of time like
@@ -89,16 +138,17 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	// 若stabled在中
+	if len(l.entries) != 0 && l.stabled >= l.entries[0].Index {
+		l.entries = l.entries[l.stabled+1-l.entries[0].Index:]
+	}
 	return l.entries
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	ents, err := l.storage.Entries(l.applied, l.committed)
-	if err != nil {
-		return nil
-	}
+	ents = l.findentries(l.applied+1, l.committed+1)
 	return ents
 }
 
@@ -106,9 +156,16 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		lastindex, _ := l.storage.LastIndex()
+		return lastindex
 	}
 	return l.entries[len(l.entries)-1].Index
+}
+
+// 最后的entry的term
+func (l *RaftLog) LastTerm() uint64 {
+	term, _ := l.Term(l.LastIndex())
+	return term
 }
 
 // Term return the term of the entry in the given index
@@ -123,4 +180,39 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return l.entries[i-l.entries[0].Index].Term, nil
 	}
 	return l.storage.Term(i)
+}
+
+// 加入新的entry
+func (l *RaftLog) AppendEntries(ents ...*pb.Entry) {
+	start := ents[0].Index
+	l.stabled = min(l.stabled, start-1)
+	// 如果当前的RaftLog.entries是空，或者非空但是start是刚好是下一个
+	// 非空的话，和第一个比较
+	if len(l.entries) == 0 {
+		// 空的话什么都不做
+	} else if start <= l.entries[0].Index {
+		// 加入的ents在unstable entries之前，则前面的要推导重来
+		l.entries = []pb.Entry{}
+	} else if start > l.entries[0].Index {
+		// 截掉ents之后的部分
+		l.entries = l.entries[0 : start-l.entries[0].Index]
+	}
+	for _, ent := range ents {
+		l.entries = append(l.entries, *ent)
+	}
+}
+
+// 找到对应的term的index，小于等于对应term，因为这个对应的index的term没有匹配上，那么就应该是，那么往前走的term应该都是小于等于term
+func (l *RaftLog) Findconflictbyterm(index uint64, term uint64) (uint64, uint64) {
+	conflictindex := index
+	// 最少要发committed之前的
+	for conflictindex > l.committed {
+		tmpterm, _ := l.Term(conflictindex)
+		if tmpterm <= term {
+			return conflictindex, tmpterm
+		} else {
+			conflictindex--
+		}
+	}
+	return conflictindex, None
 }
